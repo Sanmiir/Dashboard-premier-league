@@ -2,19 +2,26 @@ import streamlit as st
 import pandas as pd
 import glob
 import os
+import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import mean_absolute_error, r2_score, accuracy_score, confusion_matrix, silhouette_score
 
 st.set_page_config(
-    page_title="Dashboard Premier League",
+    page_title="Dashboard Premier League & ML",
     page_icon="⚽",
     layout="wide" 
 )
 
 @st.cache_data
 def carregar_dados(caminho):
-    print("Executando a carga e limpeza dos dados (só vai acontecer na primeira vez)...")
+    print("Executando a carga e limpeza dos dados...")
     arquivos_csv = glob.glob(caminho)
     lista_de_dataframes = []
 
@@ -37,7 +44,7 @@ def carregar_dados(caminho):
     df_final['Season'] = df_final['Date'].dt.year
     
     media_eficiencia = df_final['Shot_Efficiency'].mean()
-    df_final['Shot_Efficiency'].fillna(media_eficiencia, inplace=True)
+    df_final['Shot_Efficiency'] = df_final['Shot_Efficiency'].fillna(media_eficiencia)
     
     def definir_resultado(row):
         if row['Goals'] > row['Opponent_Goals']:
@@ -48,19 +55,81 @@ def carregar_dados(caminho):
             return 'Empate'
     df_final['Tipo_Resultado'] = df_final.apply(definir_resultado, axis=1)
 
-    print("Carga e limpeza concluídas!")
     return df_final
+
+@st.cache_resource
+def treinar_modelos(df):
+    resultados = {}
+    
+   
+    X_reg = df[['Shots_On_Target', 'Possession']]
+    y_reg = df['Goals']
+    X_train_reg, X_test_reg, y_train_reg, y_test_reg = train_test_split(X_reg, y_reg, test_size=0.2, random_state=42)
+    
+    model_reg = LinearRegression()
+    model_reg.fit(X_train_reg, y_train_reg)
+    y_pred_reg = model_reg.predict(X_test_reg)
+    
+    resultados['regressao'] = {
+        'mae': mean_absolute_error(y_test_reg, y_pred_reg),
+        'r2': r2_score(y_test_reg, y_pred_reg),
+        'y_test': y_test_reg,
+        'y_pred': y_pred_reg
+    }
+
+    
+    le = LabelEncoder()
+    df['Resultado_Cod'] = le.fit_transform(df['Tipo_Resultado'])
+    classes = le.classes_
+    
+    X_cls = df[['Possession', 'Shots_On_Target', 'Pass_Accuracy', 'Fouls']]
+    y_cls = df['Resultado_Cod']
+    X_train_c, X_test_c, y_train_c, y_test_c = train_test_split(X_cls, y_cls, test_size=0.2, random_state=42)
+    
+    model_cls = RandomForestClassifier(n_estimators=100, random_state=42)
+    model_cls.fit(X_train_c, y_train_c)
+    y_pred_cls = model_cls.predict(X_test_c)
+    
+    resultados['classificacao'] = {
+        'acuracia': accuracy_score(y_test_c, y_pred_cls),
+        'matriz': confusion_matrix(y_test_c, y_pred_cls),
+        'classes': classes
+    }
+
+   
+    X_cluster = df[['Possession', 'Shots', 'Fouls']]
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_cluster)
+    
+    kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
+    clusters = kmeans.fit_predict(X_scaled)
+    
+
+    df_cluster = df.copy()
+    df_cluster['Cluster'] = clusters
+    
+    resultados['agrupamento'] = {
+        'silhouette': silhouette_score(X_scaled, clusters),
+        'df_cluster': df_cluster,
+        'perfil': df_cluster.groupby('Cluster')[['Possession', 'Shots', 'Fouls']].mean()
+    }
+    
+    return resultados
 
 df = carregar_dados('archive/*.csv')
 
 if df.empty:
-    st.error("Nenhum arquivo CSV encontrado na pasta 'archive'. Verifique a estrutura de pastas.")
+    st.error("Nenhum arquivo CSV encontrado na pasta 'archive'.")
     st.stop()
 
-st.title('⚽ Análise de Dados do Big 6 da Premier League (2013-2025)')
-st.markdown("Utilize os filtros na barra lateral para uma análise detalhada do desempenho dos times.")
 
-st.sidebar.header('Filtros Interativos')
+resultados_ml = treinar_modelos(df)
+
+
+st.title('⚽ Análise Avançada da Premier League (Data Science & ML)')
+st.markdown("Dashboard completo com Estatística Descritiva e Machine Learning.")
+
+st.sidebar.header('Filtros (Visualização)')
 
 lista_times = sorted(df['time'].unique())
 times_selecionados = st.sidebar.multiselect(
@@ -78,6 +147,7 @@ temporadas_selecionadas = st.sidebar.slider(
     value=(min_season, max_season) 
 )
 
+
 if times_selecionados:
     df_filtrado = df[
         (df['time'].isin(times_selecionados)) &
@@ -86,86 +156,122 @@ if times_selecionados:
 else:
     df_filtrado = df[df['Season'].between(temporadas_selecionadas[0], temporadas_selecionadas[1])]
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Visão Geral", "📈 Desempenho Detalhado", "🔍 Análise de Correlação", "💾 Dados Brutos"])
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📊 Visão Geral", 
+    "📈 Desempenho Detalhado", 
+    "🔍 Correlação", 
+    "🤖 Machine Learning",
+    "💾 Dados Brutos"
+])
+
 
 with tab1:
-    st.header("Resumo Geral dos Times Selecionados")
-    st.markdown(f"Analisando dados de **{df_filtrado['Season'].nunique()}** temporadas (de {temporadas_selecionadas[0]} a {temporadas_selecionadas[1]}).")
+    st.header("Resumo Geral")
     
     total_jogos = df_filtrado.shape[0]
     total_gols = int(df_filtrado['Goals'].sum())
     media_gols_jogo = df_filtrado['Goals'].mean()
     
     col1, col2, col3 = st.columns(3)
-    col1.metric("Total de Jogos Analisados", f"{total_jogos:,}".replace(",", "."))
-    col2.metric("Total de Gols Marcados", f"{total_gols:,}".replace(",", "."))
-    col3.metric("Média de Gols por Jogo", f"{media_gols_jogo:.2f}")
+    col1.metric("Jogos Analisados", f"{total_jogos:,}")
+    col2.metric("Gols Totais", f"{total_gols:,}")
+    col3.metric("Média de Gols/Jogo", f"{media_gols_jogo:.2f}")
 
     st.subheader('Distribuição de Resultados')
-    contagem_resultados = df_filtrado['Tipo_Resultado'].value_counts()
-    fig_pie = px.pie(
-        values=contagem_resultados.values, 
-        names=contagem_resultados.index, 
-        title='Proporção de Vitórias, Derrotas e Empates',
-        color=contagem_resultados.index,
-        color_discrete_map={'Vitória':'#4CAF50', 'Derrota':'#F44336', 'Empate':'#FFC107'}
-    )
+    contagem = df_filtrado['Tipo_Resultado'].value_counts()
+    fig_pie = px.pie(values=contagem.values, names=contagem.index, color=contagem.index,
+                     color_discrete_map={'Vitória':'#4CAF50', 'Derrota':'#F44336', 'Empate':'#FFC107'})
     st.plotly_chart(fig_pie, use_container_width=True)
 
 
 with tab2:
-    st.header("Análise de Desempenho Ofensivo e Defensivo")
-
+    st.header("Ofensivo vs Defensivo")
     col1, col2 = st.columns(2)
+    
     with col1:
-        st.subheader('Balanço Ataque vs. Defesa')
+        st.subheader('Balanço de Gols')
         df_balanco = df_filtrado.groupby('time')[['Goals', 'Opponent_Goals']].mean().sort_values(by='Goals', ascending=False)
-        df_balanco = df_balanco.rename(columns={'Goals': 'Gols Marcados', 'Opponent_Goals': 'Gols Sofridos'})
         st.bar_chart(df_balanco)
-        st.markdown("Comparativo da média de gols marcados versus a média de gols sofridos por jogo.")
-
+    
     with col2:
-        st.subheader('Eficiência de Finalização')
-        df_filtrado_com_chutes = df_filtrado[df_filtrado['Shots_On_Target'] > 0]
-        df_eficiencia = df_filtrado_com_chutes.groupby('time').apply(
-            lambda x: x['Goals'].sum() / x['Shots_On_Target'].sum()
-        ).sort_values(ascending=False)
-        df_eficiencia = df_eficiencia.rename("Gols por Chute no Alvo")
-        st.bar_chart(df_eficiencia)
-        st.markdown("Mede quantos gols um time marca para cada chute no alvo. Um indicador de precisão.")
+        st.subheader('Eficiência de Chute')
+        df_eff = df_filtrado[df_filtrado['Shots_On_Target'] > 0]
+        df_eff = df_eff.groupby('time').apply(lambda x: x['Goals'].sum() / x['Shots_On_Target'].sum()).sort_values(ascending=False)
+        st.bar_chart(df_eff)
 
-    st.subheader('Evolução da Média de Gols por Temporada')
-    df_evolucao = df_filtrado.groupby(['Season', 'time'])['Goals'].mean().reset_index()
-    fig_line = px.line(
-        df_evolucao,
-        x='Season',
-        y='Goals',
-        color='time',
-        title='Média de Gols Marcados por Temporada',
-        markers=True
-    )
+    st.subheader('Evolução Gols/Temporada')
+    df_evo = df_filtrado.groupby(['Season', 'time'])['Goals'].mean().reset_index()
+    fig_line = px.line(df_evo, x='Season', y='Goals', color='time', markers=True)
     st.plotly_chart(fig_line, use_container_width=True)
 
+
 with tab3:
-    st.header('Análise de Correlação')
-    st.markdown("O mapa de calor abaixo mostra como as diferentes métricas se relacionam.")
-    colunas_interesse = ['Goals', 'Possession', 'Shots', 'Shots_On_Target', 'Pass_Accuracy', 'Fouls']
-    colunas_existentes = [col for col in colunas_interesse if col in df_filtrado.columns]
-    df_correlacao = df_filtrado[colunas_existentes].corr()
+    st.header('Correlação de Variáveis')
+    cols = ['Goals', 'Possession', 'Shots', 'Shots_On_Target', 'Pass_Accuracy', 'Fouls']
+    cols_exists = [c for c in cols if c in df_filtrado.columns]
     
-    fig_heatmap, ax_heatmap = plt.subplots(figsize=(10, 8))
-    sns.heatmap(df_correlacao, annot=True, cmap='coolwarm', fmt=".2f", ax=ax_heatmap)
-    st.pyplot(fig_heatmap)
+    fig_heat, ax = plt.subplots(figsize=(8, 6))
+    sns.heatmap(df_filtrado[cols_exists].corr(), annot=True, cmap='coolwarm', fmt=".2f", ax=ax)
+    st.pyplot(fig_heat)
+
 
 with tab4:
-    st.header('Dados Brutos e Download')
-    st.markdown("Visualize os dados filtrados abaixo ou faça o download do conjunto completo.")
-    st.dataframe(df_filtrado)
+    st.header("Resultados dos Modelos de IA")
+    st.info("Nota: Os modelos foram treinados com o dataset COMPLETO para garantir maior precisão estatística.")
+
+   
+    st.subheader("1. Regressão Linear: Previsão de Gols")
+    res_reg = resultados_ml['regressao']
     
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-       label="Baixar todos os dados como CSV",
-       data=csv,
-       file_name='dados_completos_premier_league.csv',
-       mime='text/csv',
+    col1, col2 = st.columns(2)
+    col1.metric("R² (Explicação)", f"{res_reg['r2']:.2f}")
+    col2.metric("Erro Médio Absoluto (MAE)", f"{res_reg['mae']:.2f}")
+    
+    fig_reg, ax = plt.subplots(figsize=(8, 4))
+    ax.scatter(res_reg['y_test'], res_reg['y_pred'], alpha=0.5, color='blue')
+    ax.plot([0, 10], [0, 10], 'k--', lw=2)
+    ax.set_xlabel('Gols Reais')
+    ax.set_ylabel('Gols Previstos')
+    ax.set_title('Real vs Previsto')
+    st.pyplot(fig_reg)
+
+    st.divider()
+
+  
+    st.subheader("2. Classificação: Resultado do Jogo")
+    res_cls = resultados_ml['classificacao']
+    
+    st.metric("Acurácia do Modelo", f"{res_cls['acuracia']:.2%}")
+    
+    fig_conf, ax = plt.subplots(figsize=(6, 4))
+    sns.heatmap(res_cls['matriz'], annot=True, fmt='d', cmap='Blues', 
+                xticklabels=res_cls['classes'], yticklabels=res_cls['classes'], ax=ax)
+    ax.set_title('Matriz de Confusão')
+    st.pyplot(fig_conf)
+
+    st.divider()
+
+    st.subheader("3. Agrupamento (K-Means): Estilos de Jogo")
+    res_cl = resultados_ml['agrupamento']
+    
+    st.metric("Silhouette Score", f"{res_cl['silhouette']:.2f}")
+  
+    fig_cluster = px.scatter(
+        res_cl['df_cluster'], 
+        x='Possession', 
+        y='Shots', 
+        color=res_cl['df_cluster']['Cluster'].astype(str),
+        title='Clusters de Estilo de Jogo (Posse vs Chutes)',
+        color_discrete_sequence=px.colors.qualitative.Set1,
+        hover_data=['time', 'Season', 'Result']
     )
+    st.plotly_chart(fig_cluster, use_container_width=True)
+    
+    st.markdown("**Perfil Médio dos Grupos:**")
+    st.dataframe(res_cl['perfil'])
+
+with tab5:
+    st.dataframe(df_filtrado)
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("Baixar CSV", csv, "dados_premier_league.csv", "text/csv")
